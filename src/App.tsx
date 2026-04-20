@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState, useEffect } from 'react';
+import React, { useState, useEffect, createContext, useContext } from 'react';
 import { 
   ShoppingBag, 
   Search, 
@@ -19,9 +19,26 @@ import {
   Youtube,
   Phone,
   MapPin,
-  Heart
+  Heart,
+  User as UserIcon,
+  LogOut,
+  LogIn
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { auth, db } from './lib/firebase';
+import { 
+  onAuthStateChanged, 
+  signInWithPopup, 
+  GoogleAuthProvider, 
+  signOut,
+  User 
+} from 'firebase/auth';
+import { 
+  doc, 
+  getDoc, 
+  setDoc, 
+  serverTimestamp 
+} from 'firebase/firestore';
 
 // --- Mock Data ---
 
@@ -96,11 +113,144 @@ const FEATURES = [
   }
 ];
 
+// --- Auth Context ---
+
+interface AuthContextType {
+  user: User | null;
+  loading: boolean;
+  loginWithGoogle: () => Promise<void>;
+  logout: () => Promise<void>;
+}
+
+const AuthContext = createContext<AuthContextType | undefined>(undefined);
+
+function AuthProvider({ children }: { children: React.ReactNode }) {
+  const [user, setUser] = useState<User | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      if (user) {
+        // Sync with Firestore
+        const userRef = doc(db, 'users', user.uid);
+        const userSnap = await getDoc(userRef);
+
+        if (!userSnap.exists()) {
+          await setDoc(userRef, {
+            uid: user.uid,
+            email: user.email,
+            displayName: user.displayName,
+            photoURL: user.photoURL,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          });
+        } else {
+          await setDoc(userRef, { updatedAt: serverTimestamp() }, { merge: true });
+        }
+        setUser(user);
+      } else {
+        setUser(null);
+      }
+      setLoading(false);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  const loginWithGoogle = async () => {
+    const provider = new GoogleAuthProvider();
+    try {
+      await signInWithPopup(auth, provider);
+    } catch (error) {
+      console.error("Login failed:", error);
+    }
+  };
+
+  const logout = async () => {
+    try {
+      await signOut(auth);
+    } catch (error) {
+      console.error("Logout failed:", error);
+    }
+  };
+
+  return (
+    <AuthContext.Provider value={{ user, loading, loginWithGoogle, logout }}>
+      {children}
+    </AuthContext.Provider>
+  );
+}
+
+function useAuth() {
+  const context = useContext(AuthContext);
+  if (!context) throw new Error('useAuth must be used within an AuthProvider');
+  return context;
+}
+
 // --- Components ---
+
+function AuthModal({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) {
+  const { loginWithGoogle } = useAuth();
+
+  return (
+    <AnimatePresence>
+      {isOpen && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={onClose}
+            className="absolute inset-0 bg-primary/40 backdrop-blur-md"
+          />
+          <motion.div
+            initial={{ scale: 0.9, opacity: 0, y: 20 }}
+            animate={{ scale: 1, opacity: 1, y: 0 }}
+            exit={{ scale: 0.9, opacity: 0, y: 20 }}
+            className="relative bg-white w-full max-w-md rounded-3xl p-8 shadow-2xl overflow-hidden"
+          >
+            <button 
+              onClick={onClose}
+              className="absolute top-6 right-6 p-2 rounded-full hover:bg-gray-100 transition-colors"
+            >
+              <X className="w-5 h-5 text-accent" />
+            </button>
+
+            <div className="text-center mb-8">
+              <div className="w-16 h-16 bg-secondary/20 text-primary rounded-2xl flex items-center justify-center text-3xl font-black mx-auto mb-4">
+                P
+              </div>
+              <h2 className="text-3xl font-black text-primary mb-2">প্রকৃতিতে স্বাগতম</h2>
+              <p className="text-accent/60 font-medium">আপনার অ্যাকাউন্ট দিয়ে লগইন করুন</p>
+            </div>
+
+            <button 
+              onClick={async () => {
+                await loginWithGoogle();
+                onClose();
+              }}
+              className="w-full flex items-center justify-center gap-3 bg-white border-2 border-border py-4 rounded-xl font-bold hover:bg-bg-paper transition-all group"
+            >
+              <img src="https://www.google.com/favicon.ico" className="w-5 h-5 group-hover:scale-110 transition-transform" />
+              Google দিয়ে লগইন করুন
+            </button>
+
+            <div className="mt-8 pt-8 border-t border-border text-center">
+              <p className="text-xs text-accent/50 font-bold uppercase tracking-widest">
+                নিরাপদ ও সহজ কেনাকাটা নিশ্চিত করুন
+              </p>
+            </div>
+          </motion.div>
+        </div>
+      )}
+    </AnimatePresence>
+  );
+}
 
 function Navbar() {
   const [isScrolled, setIsScrolled] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
+  const { user, logout } = useAuth();
 
   useEffect(() => {
     const handleScroll = () => setIsScrolled(window.scrollY > 20);
@@ -110,6 +260,7 @@ function Navbar() {
 
   return (
     <div className="fixed top-0 left-0 right-0 z-50">
+      <AuthModal isOpen={isAuthModalOpen} onClose={() => setIsAuthModalOpen(false)} />
       {/* Top Header Bar */}
       <header className="bg-primary text-white py-3 px-4 md:px-10 flex items-center justify-between">
         <div className="flex items-center gap-3 cursor-pointer">
@@ -132,7 +283,35 @@ function Navbar() {
         </div>
 
         <div className="flex items-center gap-4 md:gap-8 font-bold text-sm">
-          <div className="hidden sm:block cursor-pointer hover:text-secondary transition-colors">লগইন</div>
+          {user ? (
+            <div className="group relative flex items-center gap-3 cursor-pointer">
+              <div className="hidden sm:block text-right">
+                <div className="text-secondary text-[10px] uppercase font-black tracking-widest">স্বাগতম</div>
+                <div className="text-xs truncate max-w-[100px]">{user.displayName?.split(' ')[0]}</div>
+              </div>
+              <img 
+                src={user.photoURL || `https://ui-avatars.com/api/?name=${user.displayName}`} 
+                className="w-10 h-10 rounded-full border-2 border-secondary shadow-sm"
+              />
+              {/* Dropdown */}
+              <div className="absolute top-full right-0 mt-2 w-48 bg-white rounded-xl shadow-xl border border-border py-2 opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all transform translate-y-2 group-hover:translate-y-0">
+                <button 
+                  onClick={logout}
+                  className="w-full text-left px-4 py-3 text-accent hover:bg-gray-50 flex items-center gap-3 text-xs font-bold"
+                >
+                  <LogOut className="w-4 h-4" /> লগআউট করুন
+                </button>
+              </div>
+            </div>
+          ) : (
+            <button 
+              onClick={() => setIsAuthModalOpen(true)}
+              className="hidden sm:flex items-center gap-2 cursor-pointer hover:text-secondary transition-colors"
+            >
+              <LogIn className="w-5 h-5" />
+              লগইন
+            </button>
+          )}
           <div className="bg-secondary text-primary px-4 py-2 rounded-lg cursor-pointer flex items-center gap-2 hover:bg-white transition-all shadow-sm">
             <ShoppingBag className="w-5 h-5" />
             <span>কার্ট (০)</span>
@@ -265,8 +444,9 @@ function CategoryCard({ category }: { category: any; key?: any }) {
 
 export default function App() {
   return (
-    <div className="min-h-screen">
-      <Navbar />
+    <AuthProvider>
+      <div className="min-h-screen">
+        <Navbar />
 
       {/* Hero Section */}
       <section className="relative min-h-[70vh] flex items-center mt-24 md:mt-32 px-4 md:px-10" id="home">
@@ -538,6 +718,7 @@ export default function App() {
           </div>
         </div>
       </footer>
-    </div>
+      </div>
+    </AuthProvider>
   );
 }
